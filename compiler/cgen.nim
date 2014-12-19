@@ -720,12 +720,17 @@ proc cgsym(m: BModule, name: string): PRope =
 proc generateHeaders(m: BModule) = 
   app(m.s[cfsHeaders], tnl & "#include \"nimbase.h\"" & tnl)
   var it = PStrEntry(m.headerFiles.head)
+  let has_extra_headers = it != nil
+  if has_extra_headers:
+    app(m.s[cfsHeaders], tnl & "#endif" & tnl)
   while it != nil: 
     if it.data[0] notin {'\"', '<'}: 
       appf(m.s[cfsHeaders], "$N#include \"$1\"$N", [toRope(it.data)])
     else: 
       appf(m.s[cfsHeaders], "$N#include $1$N", [toRope(it.data)])
     it = PStrEntry(it.next)
+  if has_extra_headers:
+    app(m.s[cfsHeaders], tnl & "#ifndef __cplusplus" & tnl)
 
 proc retIsNotVoid(s: PSym): bool = 
   result = (s.typ.sons[0] != nil) and not isInvalidReturnType(s.typ.sons[0])
@@ -945,6 +950,7 @@ proc getCopyright(cfile: string): PRope =
 
 proc getFileHeader(cfile: string): PRope =
   result = getCopyright(cfile)
+  appf(result, "#ifndef __cplusplus$N")
   addIntTypes(result)
 
 proc genFilenames(m: BModule): PRope =
@@ -1177,6 +1183,7 @@ proc genModule(m: BModule, cfile: string): PRope =
     app(result, m.s[i])
     app(result, genSectionEnd(i))
   app(result, m.s[cfsInitProc])
+  appf(result, "#endif$N")
 
 proc newPreInitProc(m: BModule): BProc =
   result = newProc(nil, m)
