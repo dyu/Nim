@@ -263,7 +263,8 @@ proc semTry(c: PContext, n: PNode): PNode =
   n.sons[0] = semExprBranchScope(c, n.sons[0])
   typ = commonType(typ, n.sons[0].typ)
   var check = initIntSet()
-  for i in countup(1, sonsLen(n) - 1): 
+  var last = sonsLen(n) - 1
+  for i in countup(1, last):
     var a = n.sons[i]
     checkMinSonsLen(a, 1)
     var length = sonsLen(a)
@@ -282,11 +283,12 @@ proc semTry(c: PContext, n: PNode): PNode =
         a.sons[j].typ = typ
         if containsOrIncl(check, typ.id):
           localError(a.sons[j].info, errExceptionAlreadyHandled)
-    elif a.kind != nkFinally: 
+    elif a.kind != nkFinally:
       illFormedAst(n)
     # last child of an nkExcept/nkFinally branch is a statement:
     a.sons[length-1] = semExprBranchScope(c, a.sons[length-1])
-    typ = commonType(typ, a.sons[length-1].typ)
+    if a.kind != nkFinally: typ = commonType(typ, a.sons[length-1].typ)
+    else: dec last
   dec c.p.inTryStmt
   if isEmptyType(typ) or typ.kind == tyNil:
     discardCheck(c, n.sons[0])
@@ -294,13 +296,14 @@ proc semTry(c: PContext, n: PNode): PNode =
     if typ == enforceVoidContext:
       result.typ = enforceVoidContext
   else:
+    if n.lastSon.kind == nkFinally: discardCheck(c, n.lastSon.lastSon)
     n.sons[0] = fitNode(c, typ, n.sons[0])
-    for i in 1..n.len-1:
+    for i in 1..last:
       var it = n.sons[i]
       let j = it.len-1
       it.sons[j] = fitNode(c, typ, it.sons[j])
     result.typ = typ
-  
+
 proc fitRemoveHiddenConv(c: PContext, typ: PType, n: PNode): PNode = 
   result = fitNode(c, typ, n)
   if result.kind in {nkHiddenStdConv, nkHiddenSubConv}: 
@@ -364,6 +367,7 @@ proc semVarOrLet(c: PContext, n: PNode, symkind: TSymKind): PNode =
           # BUGFIX: ``fitNode`` is needed here!
           # check type compability between def.typ and typ        
           def = fitNode(c, typ, def)
+          #changeType(def.skipConv, typ, check=true)
       else:
         typ = skipIntLit(def.typ)
         if typ.kind in {tySequence, tyArray, tySet} and
@@ -772,7 +776,7 @@ proc semProcAnnotation(c: PContext, prc: PNode): PNode =
     if it.kind == nkExprColonExpr:
       # pass pragma argument to the macro too:
       x.add(it.sons[1])
-    x.add(newProcNode(nkDo, prc.info, prc))
+    x.add(prc)
     # recursion assures that this works for multiple macro annotations too:
     return semStmt(c, x)
 
@@ -800,6 +804,9 @@ proc semLambda(c: PContext, n: PNode, flags: TExprFlags): PNode =
     gp = newNodeI(nkGenericParams, n.info)
 
   if n.sons[paramsPos].kind != nkEmpty:
+    #if n.kind == nkDo and not experimentalMode(c):
+    #  localError(n.sons[paramsPos].info,
+    #      "use the {.experimental.} pragma to enable 'do' with parameters")
     semParamList(c, n.sons[paramsPos], gp, s)
     # paramsTypeCheck(c, s.typ)
     if sonsLen(gp) > 0 and n.sons[genericParamsPos].kind == nkEmpty:
@@ -1250,6 +1257,7 @@ proc semStmtList(c: PContext, n: PNode, flags: TExprFlags): PNode =
       tryStmt.addSon(deferPart)
       n.sons[i] = semTry(c, tryStmt)
       n.sons.setLen(i+1)
+      n.typ = n.sons[i].typ
       return
     else:
       n.sons[i] = semExpr(c, n.sons[i])

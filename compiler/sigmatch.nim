@@ -349,7 +349,7 @@ proc recordRel(c: var TCandidate, f, a: PType): TTypeRelation =
           var y = a.n.sons[i].sym
           if f.kind == tyObject and typeRel(c, x.typ, y.typ) < isSubtype:
             return isNone
-          if x.name.id != y.name.id: return isNone
+          if x.name.id != y.name.id and f.kind != tyTuple: return isNone
 
 proc allowsNil(f: PType): TTypeRelation {.inline.} =
   result = if tfNotNil notin f.flags: isSubtype else: isNone
@@ -1153,8 +1153,8 @@ proc paramTypesMatchAux(m: var TCandidate, f, argType: PType,
     of isEqual: inc(m.exactMatches)
     of isNone: discard
 
-    if f.kind == tyStmt and argOrig.kind == nkDo:
-      return argOrig[bodyPos]
+    if f.kind == tyStmt:
+      return arg
     elif f.kind == tyTypeDesc:
       return arg
     elif f.kind == tyStatic:

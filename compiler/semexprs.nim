@@ -423,34 +423,21 @@ proc overloadedCallOpr(c: PContext, n: PNode): PNode =
     for i in countup(0, sonsLen(n) - 1): addSon(result, n.sons[i])
     result = semExpr(c, result)
 
-proc changeType(n: PNode, newType: PType, check: bool) = 
+proc changeType(n: PNode, newType: PType, check: bool) =
   case n.kind
-  of nkCurly, nkBracket: 
-    for i in countup(0, sonsLen(n) - 1): 
+  of nkCurly, nkBracket:
+    for i in countup(0, sonsLen(n) - 1):
       changeType(n.sons[i], elemType(newType), check)
-  of nkPar: 
-    if newType.kind != tyTuple: 
+  of nkPar:
+    if newType.kind != tyTuple:
       internalError(n.info, "changeType: no tuple type for constructor")
-    elif newType.n == nil: discard
-    elif sonsLen(n) > 0 and n.sons[0].kind == nkExprColonExpr: 
-      for i in countup(0, sonsLen(n) - 1): 
-        var m = n.sons[i].sons[0]
-        if m.kind != nkSym: 
-          internalError(m.info, "changeType(): invalid tuple constr")
-          return
-        var f = getSymFromList(newType.n, m.sym.name)
-        if f == nil: 
-          internalError(m.info, "changeType(): invalid identifier")
-          return
-        changeType(n.sons[i].sons[1], f.typ, check)
     else:
       for i in countup(0, sonsLen(n) - 1):
         var m = n.sons[i]
-        var a = newNodeIT(nkExprColonExpr, m.info, newType.sons[i])
-        addSon(a, newSymNode(newType.n.sons[i].sym))
-        addSon(a, m)
+        if m.kind == nkExprColonExpr:
+          m = m.sons[1]
+          n.sons[i] = m
         changeType(m, newType.sons[i], check)
-        n.sons[i] = a
   of nkCharLit..nkUInt64Lit:
     if check:
       let value = n.intVal
@@ -541,7 +528,8 @@ proc fixAbstractType(c: PContext, n: PNode) =
       elif skipTypes(it.sons[1].typ, abstractVar).kind in
           {tyNil, tyArrayConstr, tyTuple, tySet}: 
         var s = skipTypes(it.typ, abstractVar)
-        changeType(it.sons[1], s, check=true)
+        if s.kind != tyExpr:
+          changeType(it.sons[1], s, check=true)
         n.sons[i] = it.sons[1]
     of nkBracket: 
       # an implicitly constructed array (passed to an open array):
@@ -729,7 +717,7 @@ proc semOverloadedCallAnalyseEffects(c: PContext, n: PNode, nOrig: PNode,
     case callee.kind
     of skMacro, skTemplate: discard
     else:
-      if (callee.kind in skIterators) and (callee.id == c.p.owner.id): 
+      if callee.kind in skIterators and callee.id == c.p.owner.id:
         localError(n.info, errRecursiveDependencyX, callee.name.s)
       if sfNoSideEffect notin callee.flags: 
         if {sfImportc, sfSideEffect} * callee.flags != {}:
@@ -1517,11 +1505,11 @@ proc semQuoteAst(c: PContext, n: PNode): PNode =
   
   doBlk.sons[namePos] = newAnonSym(skTemplate, n.info).newSymNode
   if ids.len > 0:
-    doBlk[paramsPos].sons.setLen(2)
-    doBlk[paramsPos].sons[0] = getSysSym("stmt").newSymNode # return type
+    doBlk.sons[paramsPos] = newNodeI(nkFormalParams, n.info)
+    doBlk[paramsPos].add getSysSym("stmt").newSymNode # return type
     ids.add getSysSym("expr").newSymNode # params type
     ids.add emptyNode # no default value
-    doBlk[paramsPos].sons[1] = newNode(nkIdentDefs, n.info, ids)
+    doBlk[paramsPos].add newNode(nkIdentDefs, n.info, ids)
   
   var tmpl = semTemplateDef(c, doBlk)
   quotes[0] = tmpl[namePos]
@@ -1904,19 +1892,6 @@ proc semBlock(c: PContext, n: PNode): PNode =
   closeScope(c)
   dec(c.p.nestedBlockCounter)
 
-proc doBlockIsStmtList(n: PNode): bool =
-  result = n.kind == nkDo and
-           n[paramsPos].sonsLen == 1 and
-           n[paramsPos][0].kind == nkEmpty
-
-proc fixImmediateParams(n: PNode): PNode =
-  # XXX: Temporary work-around until we carry out
-  # the planned overload resolution reforms
-  for i in 1 .. <safeLen(n):
-    if doBlockIsStmtList(n[i]):
-      n.sons[i] = n[i][bodyPos]
-  result = n
-
 proc semExport(c: PContext, n: PNode): PNode =
   var x = newNodeI(n.kind, n.info)
   #let L = if n.kind == nkExportExceptStmt: L = 1 else: n.len
@@ -2034,14 +2009,12 @@ proc semExpr(c: PContext, n: PNode, flags: TExprFlags = {}): PNode =
         if sfImmediate notin s.flags:
           result = semDirectOp(c, n, flags)
         else:
-          var p = fixImmediateParams(n)
-          result = semMacroExpr(c, p, p, s, flags)
+          result = semMacroExpr(c, n, n, s, flags)
       of skTemplate:
         if sfImmediate notin s.flags:
           result = semDirectOp(c, n, flags)
         else:
-          var p = fixImmediateParams(n)
-          result = semTemplateExpr(c, p, s, flags)
+          result = semTemplateExpr(c, n, s, flags)
       of skType:
         # XXX think about this more (``set`` procs)
         if n.len == 2:
