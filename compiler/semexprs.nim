@@ -429,7 +429,8 @@ proc changeType(n: PNode, newType: PType, check: bool) =
     for i in countup(0, sonsLen(n) - 1):
       changeType(n.sons[i], elemType(newType), check)
   of nkPar:
-    if newType.kind != tyTuple:
+    let tup = newType.skipTypes({tyGenericInst})
+    if tup.kind != tyTuple:
       internalError(n.info, "changeType: no tuple type for constructor")
     else:
       for i in countup(0, sonsLen(n) - 1):
@@ -437,7 +438,7 @@ proc changeType(n: PNode, newType: PType, check: bool) =
         if m.kind == nkExprColonExpr:
           m = m.sons[1]
           n.sons[i] = m
-        changeType(m, newType.sons[i], check)
+        changeType(m, tup.sons[i], check)
   of nkCharLit..nkUInt64Lit:
     if check:
       let value = n.intVal
@@ -926,17 +927,18 @@ proc readTypeParameter(c: PContext, typ: PType,
                        paramName: PIdent, info: TLineInfo): PNode =
   let ty = if typ.kind == tyGenericInst: typ.skipGenericAlias
            else: (internalAssert(typ.kind == tyCompositeTypeClass); typ.sons[1])
-  
+  #debug ty
   let tbody = ty.sons[0]
   for s in countup(0, tbody.len-2):
     let tParam = tbody.sons[s]
-    if tParam.sym.name == paramName:
+    if tParam.sym.name.id == paramName.id:
       let rawTyp = ty.sons[s + 1]
       if rawTyp.kind == tyStatic:
         return rawTyp.n
       else:
         let foundTyp = makeTypeDesc(c, rawTyp)
         return newSymNode(copySym(tParam.sym).linkTo(foundTyp), info)
+  #echo "came here: returned nil"
 
 proc builtinFieldAccess(c: PContext, n: PNode, flags: TExprFlags): PNode =
   ## returns nil if it's not a built-in field access
@@ -971,7 +973,7 @@ proc builtinFieldAccess(c: PContext, n: PNode, flags: TExprFlags): PNode =
       # look up if the identifier belongs to the enum:
       while ty != nil:
         f = getSymFromList(ty.n, i)
-        if f != nil: break 
+        if f != nil: break
         ty = ty.sons[0]         # enum inheritance
       if f != nil:
         result = newSymNode(f)
