@@ -219,7 +219,7 @@ proc maybeLiftType(t: var PType, c: PContext, info: TLineInfo) =
   # gnrc. params, then it won't be necessary to open a new scope here
   openScope(c)
   var lifted = liftParamType(c, skType, newNodeI(nkArgList, info),
-                         t, ":anon", info)
+                             t, ":anon", info)
   closeScope(c)
   if lifted != nil: t = lifted
 
@@ -229,7 +229,7 @@ proc semConv(c: PContext, n: PNode): PNode =
     return n
 
   result = newNodeI(nkConv, n.info)
-  var targetType = semTypeNode(c, n.sons[0], nil)
+  var targetType = semTypeNode(c, n.sons[0], nil).skipTypes({tyTypeDesc})
   maybeLiftType(targetType, c, n[0].info)
   result.addSon copyTree(n.sons[0])
   var op = semExprWithType(c, n.sons[1])
@@ -780,7 +780,6 @@ proc semIndirectOp(c: PContext, n: PNode, flags: TExprFlags): PNode =
     if tfNoSideEffect notin t.flags: incl(c.p.owner.flags, sfSideEffect)
   elif t != nil and t.kind == tyTypeDesc:
     if n.len == 1: return semObjConstr(c, n, flags)
-    let destType = t.skipTypes({tyTypeDesc, tyGenericInst})
     return semConv(c, n)
   else:
     result = overloadedCallOpr(c, n)
@@ -926,8 +925,8 @@ const
 proc readTypeParameter(c: PContext, typ: PType,
                        paramName: PIdent, info: TLineInfo): PNode =
   let ty = if typ.kind == tyGenericInst: typ.skipGenericAlias
-           else: (internalAssert(typ.kind == tyCompositeTypeClass); typ.sons[1])
-  #debug ty
+           else: (internalAssert(typ.kind == tyCompositeTypeClass);
+                  typ.sons[1].skipGenericAlias)
   let tbody = ty.sons[0]
   for s in countup(0, tbody.len-2):
     let tParam = tbody.sons[s]
@@ -965,6 +964,7 @@ proc builtinFieldAccess(c: PContext, n: PNode, flags: TExprFlags): PNode =
   var ty = n.sons[0].typ
   var f: PSym = nil
   result = nil
+
   if isTypeExpr(n.sons[0]) or (ty.kind == tyTypeDesc and ty.base.kind != tyNone):
     if ty.kind == tyTypeDesc: ty = ty.base
     ty = ty.skipTypes(tyDotOpTransparent)
@@ -985,7 +985,7 @@ proc builtinFieldAccess(c: PContext, n: PNode, flags: TExprFlags): PNode =
     of tyTypeParamsHolders:
       return readTypeParameter(c, ty, i, n.info)
     of tyObject, tyTuple:
-      if ty.n.kind == nkRecList:
+      if ty.n != nil and ty.n.kind == nkRecList:
         for field in ty.n:
           if field.sym.name == i:
             n.typ = newTypeWithSons(c, tyFieldAccessor, @[ty, field.sym.typ])
