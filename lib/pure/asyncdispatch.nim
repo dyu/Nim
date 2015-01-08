@@ -1,7 +1,7 @@
 #
 #
 #            Nim's Runtime Library
-#        (c) Copyright 2014 Dominik Picheta
+#        (c) Copyright 2015 Dominik Picheta
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
@@ -878,6 +878,10 @@ else:
       let data = PData(info.key.data)
       assert data.fd == info.key.fd.TAsyncFD
       #echo("In poll ", data.fd.cint)
+      if EvError in info.events:
+        closeSocket(data.fd)
+        continue
+
       if EvRead in info.events:
         # Callback may add items to ``data.readCBs`` which causes issues if
         # we are iterating over ``data.readCBs`` at the same time. We therefore

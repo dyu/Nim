@@ -1,7 +1,7 @@
 #
 #
 #           The Nim Compiler
-#        (c) Copyright 2014 Andreas Rumpf
+#        (c) Copyright 2015 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
@@ -18,12 +18,6 @@ import
   tables, docgen2, service, parser, modules, ccgutils, sigmatch, ropes, lists
 
 from magicsys import systemModule, resetSysTypes
-
-const
-  hasLLVM_Backend = false
-
-when hasLLVM_Backend:
-  import llvmgen
 
 proc rodPass =
   if optSymbolFiles in gGlobalOptions:
@@ -110,14 +104,6 @@ proc commandCompileToC =
     resetCompilationLists()
     ccgutils.resetCaches()
     GC_fullCollect()
-
-when hasLLVM_Backend:
-  proc commandCompileToLLVM =
-    semanticPasses()
-    registerPass(llvmgen.llvmgenPass())
-    rodPass()
-    #registerPass(cleanupPass())
-    compileProject()
 
 proc commandCompileToJS =
   #incl(gGlobalOptions, optSafeCode)
@@ -290,12 +276,6 @@ proc mainCommand* =
   of "js", "compiletojs":
     gCmd = cmdCompileToJS
     commandCompileToJS()
-  of "compiletollvm":
-    gCmd = cmdCompileToLLVM
-    when hasLLVM_Backend:
-      CommandCompileToLLVM()
-    else:
-      rawMessage(errInvalidCommandX, command)
   of "doc":
     wantMainModule()
     gCmd = cmdDoc
