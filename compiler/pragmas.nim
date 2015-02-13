@@ -411,12 +411,6 @@ proc processCommonLink(c: PContext, n: PNode, feature: TLinkFeature) =
 proc pragmaBreakpoint(c: PContext, n: PNode) = 
   discard getOptionalStr(c, n, "")
 
-proc pragmaCheckpoint(c: PContext, n: PNode) = 
-  # checkpoints can be used to debug the compiler; they are not documented
-  var info = n.info
-  inc(info.line)              # next line is affected!
-  msgs.addCheckpoint(info)
-
 proc pragmaWatchpoint(c: PContext, n: PNode) =
   if n.kind == nkExprColonExpr:
     n.sons[1] = c.semExpr(c, n.sons[1])
@@ -453,7 +447,9 @@ proc semAsmOrEmit*(con: PContext, n: PNode, marker: char): PNode =
         addSon(result, newStrNode(nkStrLit, $marker))
       if c < 0: break 
       a = c + 1
-  else: illFormedAst(n)
+  else:
+    illFormedAstLocal(n)
+    result = newNode(nkAsmStmt, n.info)
   
 proc pragmaEmit(c: PContext, n: PNode) = 
   discard getStrLitNode(c, n)
@@ -739,11 +735,10 @@ proc singlePragma(c: PContext, sym: PSym, n: PNode, i: int,
           incl(sym.flags, sfProcvar)
           if sym.typ != nil: incl(sym.typ.flags, tfThread)
         of wGcSafe:
-          if optThreadAnalysis in gGlobalOptions:
-            noVal(it)
-            if sym.kind != skType: incl(sym.flags, sfThread)
-            if sym.typ != nil: incl(sym.typ.flags, tfGcSafe)
-            else: invalidPragma(it)
+          noVal(it)
+          if sym.kind != skType: incl(sym.flags, sfThread)
+          if sym.typ != nil: incl(sym.typ.flags, tfGcSafe)
+          else: invalidPragma(it)
         of wPacked:
           noVal(it)
           if sym.typ == nil: invalidPragma(it)

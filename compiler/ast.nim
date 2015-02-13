@@ -428,6 +428,7 @@ type
     nfExplicitCall # x.y() was used instead of x.y
     nfExprCall  # this is an attempt to call a regular expression
     nfIsRef     # this node is a 'ref' node; used for the VM
+    nfIsCursor  # this node is attached a cursor; used for idetools
  
   TNodeFlags* = set[TNodeFlag]
   TTypeFlag* = enum   # keep below 32 for efficiency reasons (now: 28)
@@ -458,7 +459,7 @@ type
     
     tfNeedsInit,      # type constains a "not nil" constraint somewhere or some
                       # other type so that it requires inititalization
-    tfHasShared,      # type constains a "shared" constraint modifier somewhere
+    tfVarIsPtr,       # 'var' type is translated like 'ptr' even in C++ mode
     tfHasMeta,        # type contains "wildcard" sub-types such as generic params
                       # or other type classes
     tfHasGCedMem,     # type contains GC'ed memory
@@ -521,7 +522,7 @@ const
   skError* = skUnknown
   
   # type flags that are essential for type equality:
-  eqTypeFlags* = {tfIterator, tfShared, tfNotNil}
+  eqTypeFlags* = {tfIterator, tfShared, tfNotNil, tfVarIsPtr}
 
 type
   TMagic* = enum # symbols that require compiler magic:
@@ -654,7 +655,6 @@ type
     locGlobalVar,             # location is a global variable
     locParam,                 # location is a parameter
     locField,                 # location is a record field
-    locArrayElem,             # location is an array element
     locExpr,                  # "location" is really an expression
     locProc,                  # location is a proc (an address of a procedure)
     locData,                  # location is a constant
@@ -668,14 +668,15 @@ type
     lfDynamicLib,             # link symbol to dynamic library
     lfExportLib,              # export symbol for dynamic library generation
     lfHeader,                 # include header file for symbol
-    lfImportCompilerProc      # ``importc`` of a compilerproc
+    lfImportCompilerProc,     # ``importc`` of a compilerproc
+    lfSingleUse               # no location yet and will only be used once
   TStorageLoc* = enum 
     OnUnknown,                # location is unknown (stack, heap or static)
     OnStack,                  # location is on hardware stack
     OnHeap                    # location is on heap or global
                               # (reference counting needed)
   TLocFlags* = set[TLocFlag]
-  TLoc*{.final.} = object     
+  TLoc* = object     
     k*: TLocKind              # kind of location
     s*: TStorageLoc
     flags*: TLocFlags         # location's flags
@@ -883,7 +884,7 @@ const
     skMacro, skTemplate, skConverter, skEnumField, skLet, skStub, skAlias}
   PersistentNodeFlags*: TNodeFlags = {nfBase2, nfBase8, nfBase16,
                                       nfDotSetter, nfDotField,
-                                      nfIsRef}
+                                      nfIsRef, nfIsCursor}
   namePos* = 0
   patternPos* = 1    # empty except for term rewriting macros
   genericParamsPos* = 2
@@ -1347,7 +1348,7 @@ proc isGCedMem*(t: PType): bool {.inline.} =
 
 proc propagateToOwner*(owner, elem: PType) =
   const HaveTheirOwnEmpty = {tySequence, tySet}
-  owner.flags = owner.flags + (elem.flags * {tfHasShared, tfHasMeta})
+  owner.flags = owner.flags + (elem.flags * {tfHasMeta})
   if tfNotNil in elem.flags:
     if owner.kind in {tyGenericInst, tyGenericBody, tyGenericInvokation}:
       owner.flags.incl tfNotNil
@@ -1358,9 +1359,6 @@ proc propagateToOwner*(owner, elem: PType) =
     if owner.kind in HaveTheirOwnEmpty: discard
     else: owner.flags.incl tfNeedsInit
     
-  if tfShared in elem.flags:
-    owner.flags.incl tfHasShared
-
   if elem.isMetaType:
     owner.flags.incl tfHasMeta
 
@@ -1567,3 +1565,11 @@ proc makeStmtList*(n: PNode): PNode =
   else:
     result = newNodeI(nkStmtList, n.info)
     result.add n
+
+proc createMagic*(name: string, m: TMagic): PSym =
+  result = newSym(skProc, getIdent(name), nil, unknownLineInfo())
+  result.magic = m
+
+let
+  opNot* = createMagic("not", mNot)
+  opContains* = createMagic("contains", mInSet)

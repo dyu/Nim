@@ -12,7 +12,7 @@
 import
   parseutils, strutils, pegs, os, osproc, streams, parsecfg, json,
   marshal, backend, parseopt, specs, htmlgen, browsers, terminal,
-  algorithm
+  algorithm, compiler/nodejs
 
 const
   resultsFile = "testresults.html"
@@ -57,7 +57,7 @@ let
 proc callCompiler(cmdTemplate, filename, options: string,
                   target: TTarget): TSpec =
   let c = parseCmdLine(cmdTemplate % ["target", targetToCmd[target],
-                       "options", options, "file", filename])
+                       "options", options, "file", filename.quoteShell])
   var p = startProcess(command=c[0], args=c[1.. -1],
                        options={poStdErrToStdOut, poUseShell})
   let outp = p.outputStream
@@ -134,7 +134,7 @@ proc cmpMsgs(r: var TResults, expected, given: TSpec, test: TTest) =
 proc generatedFile(path, name: string, target: TTarget): string =
   let ext = targetToExt[target]
   result = path / "nimcache" /
-    (if target == targetJS: path.splitPath.tail & "_" else: "") &
+    (if target == targetJS: path.splitPath.tail & "_" else: "compiler_") &
     name.changeFileExt(ext)
 
 proc codegenCheck(test: TTest, check: string, given: var TSpec) =
@@ -187,12 +187,13 @@ proc testSpec(r: var TResults, test: TTest) =
         else:
           exeFile = changeFileExt(tname, ExeExt)
         if existsFile(exeFile):
-          if test.target == targetJS and findExe("nodejs") == "":
+          let nodejs = findNodeJs()
+          if test.target == targetJS and nodejs == "":
             r.addResult(test, expected.outp, "nodejs binary not in PATH",
                         reExeNotFound)
             return
           var (buf, exitCode) = execCmdEx(
-            (if test.target == targetJS: "nodejs " else: "") & exeFile)
+            (if test.target == targetJS: nodejs & " " else: "") & exeFile)
           if exitCode != expected.exitCode:
             r.addResult(test, "exitcode: " & $expected.exitCode,
                               "exitcode: " & $exitCode, reExitCodesDiffer)

@@ -291,12 +291,14 @@ include "system/inclrtl"
 const NoFakeVars* = defined(NimrodVM) ## true if the backend doesn't support \
   ## "fake variables" like 'var EBADF {.importc.}: cint'.
 
+const ArrayDummySize = when defined(cpu16): 10_000 else: 100_000_000
+
 when not defined(JS):
   type
     TGenericSeq {.compilerproc, pure, inheritable.} = object
       len, reserved: int
     PGenericSeq {.exportc.} = ptr TGenericSeq
-    UncheckedCharArray {.unchecked.} = array[0..100_000_000, char]
+    UncheckedCharArray {.unchecked.} = array[0..ArrayDummySize, char]
     # len and space without counting the terminating zero:
     NimStringDesc {.compilerproc, final.} = object of TGenericSeq
       data: UncheckedCharArray
@@ -341,10 +343,10 @@ type
     ##
     ## Each exception has to inherit from `Exception`. See the full `exception
     ## hierarchy`_.
-    parent: ref Exception     ## parent exception (can be used as a stack)
-    name: cstring             ## The exception's name is its Nim identifier.
-                              ## This field is filled automatically in the
-                              ## ``raise`` statement.
+    parent*: ref Exception ## parent exception (can be used as a stack)
+    name: cstring ## The exception's name is its Nim identifier.
+                  ## This field is filled automatically in the
+                  ## ``raise`` statement.
     msg* {.exportc: "message".}: string ## the exception's message. Not
                                         ## providing an exception message 
                                         ## is bad style.
@@ -1227,7 +1229,7 @@ type # these work for most platforms:
   culonglong* {.importc: "unsigned long long", nodecl.} = uint64
     ## This is the same as the type ``unsigned long long`` in *C*.
 
-  cstringArray* {.importc: "char**", nodecl.} = ptr array [0..50_000, cstring]
+  cstringArray* {.importc: "char**", nodecl.} = ptr array [0..ArrayDummySize, cstring]
     ## This is binary compatible to the type ``char**`` in *C*. The array's
     ## high value is large enough to disable bounds checking in practice.
     ## Use `cstringArrayToSeq` to convert it into a ``seq[string]``.
@@ -1651,8 +1653,24 @@ iterator items*[T](a: openArray[T]): T {.inline.} =
     yield a[i]
     inc(i)
 
+iterator mitems*[T](a: var openArray[T]): var T {.inline.} =
+  ## iterates over each item of `a` so that you can modify the yielded value.
+  var i = 0
+  while i < len(a):
+    yield a[i]
+    inc(i)
+
 iterator items*[IX, T](a: array[IX, T]): T {.inline.} =
   ## iterates over each item of `a`.
+  var i = low(IX)
+  if i <= high(IX):
+    while true:
+      yield a[i]
+      if i >= high(IX): break
+      inc(i)
+
+iterator mitems*[IX, T](a: var array[IX, T]): var T {.inline.} =
+  ## iterates over each item of `a` so that you can modify the yielded value.
   var i = low(IX)
   if i <= high(IX):
     while true:
@@ -1678,6 +1696,13 @@ iterator items*(a: cstring): char {.inline.} =
     yield a[i]
     inc(i)
 
+iterator mitems*(a: var cstring): var char {.inline.} =
+  ## iterates over each item of `a` so that you can modify the yielded value.
+  var i = 0
+  while a[i] != '\0':
+    yield a[i]
+    inc(i)
+
 iterator items*(E: typedesc[enum]): E =
   ## iterates over the values of the enum ``E``.
   for v in low(E)..high(E):
@@ -1685,6 +1710,14 @@ iterator items*(E: typedesc[enum]): E =
 
 iterator pairs*[T](a: openArray[T]): tuple[key: int, val: T] {.inline.} =
   ## iterates over each item of `a`. Yields ``(index, a[index])`` pairs.
+  var i = 0
+  while i < len(a):
+    yield (i, a[i])
+    inc(i)
+
+iterator mpairs*[T](a: var openArray[T]): tuple[key: int, val: var T] {.inline.} =
+  ## iterates over each item of `a`. Yields ``(index, a[index])`` pairs.
+  ## ``a[index]`` can be modified.
   var i = 0
   while i < len(a):
     yield (i, a[i])
@@ -1699,8 +1732,26 @@ iterator pairs*[IX, T](a: array[IX, T]): tuple[key: IX, val: T] {.inline.} =
       if i >= high(IX): break
       inc(i)
 
+iterator mpairs*[IX, T](a: var array[IX, T]): tuple[key: IX, val: var T] {.inline.} =
+  ## iterates over each item of `a`. Yields ``(index, a[index])`` pairs.
+  ## ``a[index]`` can be modified.
+  var i = low(IX)
+  if i <= high(IX):
+    while true:
+      yield (i, a[i])
+      if i >= high(IX): break
+      inc(i)
+
 iterator pairs*[T](a: seq[T]): tuple[key: int, val: T] {.inline.} =
   ## iterates over each item of `a`. Yields ``(index, a[index])`` pairs.
+  var i = 0
+  while i < len(a):
+    yield (i, a[i])
+    inc(i)
+
+iterator mpairs*[T](a: var seq[T]): tuple[key: int, val: var T] {.inline.} =
+  ## iterates over each item of `a`. Yields ``(index, a[index])`` pairs.
+  ## ``a[index]`` can be modified.
   var i = 0
   while i < len(a):
     yield (i, a[i])
@@ -1710,6 +1761,29 @@ iterator pairs*(a: string): tuple[key: int, val: char] {.inline.} =
   ## iterates over each item of `a`. Yields ``(index, a[index])`` pairs.
   var i = 0
   while i < len(a):
+    yield (i, a[i])
+    inc(i)
+
+iterator mpairs*(a: var string): tuple[key: int, val: var char] {.inline.} =
+  ## iterates over each item of `a`. Yields ``(index, a[index])`` pairs.
+  ## ``a[index]`` can be modified.
+  var i = 0
+  while i < len(a):
+    yield (i, a[i])
+    inc(i)
+
+iterator pairs*(a: cstring): tuple[key: int, val: char] {.inline.} =
+  ## iterates over each item of `a`. Yields ``(index, a[index])`` pairs.
+  var i = 0
+  while a[i] != '\0':
+    yield (i, a[i])
+    inc(i)
+
+iterator mpairs*(a: var cstring): tuple[key: int, val: var char] {.inline.} =
+  ## iterates over each item of `a`. Yields ``(index, a[index])`` pairs.
+  ## ``a[index]`` can be modified.
+  var i = 0
+  while a[i] != '\0':
     yield (i, a[i])
     inc(i)
 
@@ -2024,17 +2098,16 @@ when not defined(nimrodVM) and hostOS != "standalone":
     ## returns an informative string about the GC's activity. This may be useful
     ## for tweaking.
     
-  # XXX mark these as 'locks: 0' once 0.10.0 has been released
-  proc GC_ref*[T](x: ref T) {.magic: "GCref", gcsafe.}
-  proc GC_ref*[T](x: seq[T]) {.magic: "GCref", gcsafe.}
-  proc GC_ref*(x: string) {.magic: "GCref", gcsafe.}
+  proc GC_ref*[T](x: ref T) {.magic: "GCref", benign.}
+  proc GC_ref*[T](x: seq[T]) {.magic: "GCref", benign.}
+  proc GC_ref*(x: string) {.magic: "GCref", benign.}
     ## marks the object `x` as referenced, so that it will not be freed until
     ## it is unmarked via `GC_unref`. If called n-times for the same object `x`,
     ## n calls to `GC_unref` are needed to unmark `x`. 
     
-  proc GC_unref*[T](x: ref T) {.magic: "GCunref", gcsafe.}
-  proc GC_unref*[T](x: seq[T]) {.magic: "GCunref", gcsafe.}
-  proc GC_unref*(x: string) {.magic: "GCunref", gcsafe.}
+  proc GC_unref*[T](x: ref T) {.magic: "GCunref", benign.}
+  proc GC_unref*[T](x: seq[T]) {.magic: "GCunref", benign.}
+  proc GC_unref*(x: string) {.magic: "GCunref", benign.}
     ## see the documentation of `GC_ref`.
 
 template accumulateResult*(iter: expr) =
@@ -2120,7 +2193,8 @@ elif hostOS != "standalone":
       inc(i)
   {.pop.}
 
-proc echo*(x: varargs[expr, `$`]) {.magic: "Echo", tags: [WriteIOEffect], benign.}
+proc echo*(x: varargs[expr, `$`]) {.magic: "Echo", tags: [WriteIOEffect],
+  benign, sideEffect.}
   ## Writes and flushes the parameters to the standard output.
   ##
   ## Special built-in that takes a variable number of arguments. Each argument
@@ -2173,14 +2247,9 @@ when not declared(sysFatal):
       e.msg = message & arg
       raise e
 
-when defined(nimlocks):
-  proc getTypeInfo*[T](x: T): pointer {.magic: "GetTypeInfo", gcsafe, locks: 0.}
-    ## get type information for `x`. Ordinary code should not use this, but
-    ## the `typeinfo` module instead.
-else:
-  proc getTypeInfo*[T](x: T): pointer {.magic: "GetTypeInfo", gcsafe.}
-    ## get type information for `x`. Ordinary code should not use this, but
-    ## the `typeinfo` module instead.
+proc getTypeInfo*[T](x: T): pointer {.magic: "GetTypeInfo", benign.}
+  ## get type information for `x`. Ordinary code should not use this, but
+  ## the `typeinfo` module instead.
 
 {.push stackTrace: off.}
 proc abs*(x: int): int {.magic: "AbsI", noSideEffect.} =
@@ -2380,14 +2449,10 @@ when not defined(JS): #and not defined(NimrodVM):
       ## Returns ``false`` if the end of the file has been reached, ``true``
       ## otherwise. If ``false`` is returned `line` contains no new data.
 
-    when not defined(booting):
-      proc writeln*[Ty](f: File, x: varargs[Ty, `$`]) {.inline, 
-                               tags: [WriteIOEffect], gcsafe, locks: 0.}
-        ## writes the values `x` to `f` and then writes "\n".
-        ## May throw an IO exception.
-    else:
-      proc writeln*[Ty](f: File, x: varargs[Ty, `$`]) {.inline, 
-                               tags: [WriteIOEffect].}
+    proc writeln*[Ty](f: File, x: varargs[Ty, `$`]) {.inline, 
+                             tags: [WriteIOEffect], benign.}
+      ## writes the values `x` to `f` and then writes "\n".
+      ## May throw an IO exception.
 
     proc getFileSize*(f: File): int64 {.tags: [ReadIOEffect], benign.}
       ## retrieves the file size (in bytes) of `f`.
@@ -2501,13 +2566,13 @@ when not defined(JS): #and not defined(NimrodVM):
     initAllocator()
   when hasThreadSupport:
     include "system/syslocks"
-    include "system/threads"
+    when hostOS != "standalone": include "system/threads"
   elif not defined(nogc) and not defined(NimrodVM) and hostOS != "standalone":
     when not defined(useNimRtl) and not defined(createNimRtl): initStackBottom()
     initGC()
 
   when not defined(NimrodVM):
-    proc setControlCHook*(hook: proc () {.noconv.})
+    proc setControlCHook*(hook: proc () {.noconv.} not nil)
       ## allows you to override the behaviour of your application when CTRL+C
       ## is pressed. Only one such hook is supported.
       
@@ -2990,8 +3055,26 @@ iterator items*[T](a: seq[T]): T {.inline.} =
     inc(i)
     assert(len(a) == L, "seq modified while iterating over it")
 
+iterator mitems*[T](a: var seq[T]): var T {.inline.} =
+  ## iterates over each item of `a` so that you can modify the yielded value.
+  var i = 0
+  let L = len(a)
+  while i < L:
+    yield a[i]
+    inc(i)
+    assert(len(a) == L, "seq modified while iterating over it")
+
 iterator items*(a: string): char {.inline.} =
   ## iterates over each item of `a`.
+  var i = 0
+  let L = len(a)
+  while i < L:
+    yield a[i]
+    inc(i)
+    assert(len(a) == L, "string modified while iterating over it")
+
+iterator mitems*(a: var string): var char {.inline.} =
+  ## iterates over each item of `a` so that you can modify the yielded value.
   var i = 0
   let L = len(a)
   while i < L:
@@ -3068,7 +3151,7 @@ when hostOS != "standalone":
       x[j+i] = item[j]
       inc(j)
 
-proc compiles*(x): bool {.magic: "Compiles", noSideEffect.} =
+proc compiles*(x: expr): bool {.magic: "Compiles", noSideEffect.} =
   ## Special compile-time procedure that checks whether `x` can be compiled
   ## without any semantic error.
   ## This can be used to check whether a type supports some operation:

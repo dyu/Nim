@@ -984,6 +984,7 @@ proc rawExecute(c: PCtx, start: int, tos: PStackFrame): TFullReg =
       let rb = instr.regBx - wordExcess
       let cnst = c.constants.sons[rb]
       if fitsRegister(cnst.typ):
+        myreset(regs[ra])
         putIntoReg(regs[ra], cnst)
       else:
         ensureKind(rkNode)
@@ -1011,7 +1012,7 @@ proc rawExecute(c: PCtx, start: int, tos: PStackFrame): TFullReg =
     of opcQuit:
       if c.mode in {emRepl, emStaticExpr, emStaticStmt}:
         message(c.debug[pc], hintQuitCalled)
-        quit(int(getOrdValue(regs[ra].regToNode)))
+        msgQuit(int8(getOrdValue(regs[ra].regToNode)))
       else:
         return TFullReg(kind: rkNone)
     of opcSetLenStr:
@@ -1363,9 +1364,11 @@ var
   globalCtx: PCtx
 
 proc setupGlobalCtx(module: PSym) =
-  if globalCtx.isNil: globalCtx = newCtx(module)
-  else: refresh(globalCtx, module)
-  registerAdditionalOps(globalCtx)
+  if globalCtx.isNil:
+    globalCtx = newCtx(module)
+    registerAdditionalOps(globalCtx)
+  else:
+    refresh(globalCtx, module)
 
 proc myOpen(module: PSym): PPassContext =
   #var c = newEvalContext(module, emRepl)
@@ -1435,7 +1438,9 @@ proc evalMacroCall*(module: PSym, n, nOrig: PNode, sym: PSym): PNode =
   # immediate macros can bypass any type and arity checking so we check the
   # arity here too:
   if sym.typ.len > n.safeLen and sym.typ.len > 1:
-    globalError(n.info, "got $#, but expected $# argument(s)" % [$ <n.safeLen, $ <sym.typ.len])
+    globalError(n.info, "in call '$#' got $#, but expected $# argument(s)" % [
+        n.renderTree,
+        $ <n.safeLen, $ <sym.typ.len])
 
   setupGlobalCtx(module)
   var c = globalCtx

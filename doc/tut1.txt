@@ -1313,9 +1313,9 @@ Slices
 ------
 
 Slices look similar to subranges types in syntax but are used in a different
-context. A slice is just an object of type TSlice which contains two bounds,
+context. A slice is just an object of type Slice which contains two bounds,
 `a` and `b`. By itself a slice is not very useful, but other collection types
-define operators which accept TSlice objects to define ranges.
+define operators which accept Slice objects to define ranges.
 
 .. code-block:: nim
 
@@ -1350,11 +1350,11 @@ integer.
 .. code-block:: nim
 
   type
-    TPerson = tuple[name: string, age: int] # type representing a person:
-                                            # a person consists of a name
-                                            # and an age
+    Person = tuple[name: string, age: int] # type representing a person:
+                                           # a person consists of a name
+                                           # and an age
   var
-    person: TPerson
+    person: Person
   person = (name: "Peter", age: 30)
   # the same, but less readable:
   person = ("Peter", 30)
@@ -1373,7 +1373,7 @@ integer.
   # The following line does not compile, they are different tuples!
   #person = building
   # --> Error: type mismatch: got (tuple[street: string, number: int])
-  #     but expected 'TPerson'
+  #     but expected 'Person'
   
   # The following works because the field names and types are the same.
   var teacher: tuple[name: string, age: int] = ("Mark", 42)

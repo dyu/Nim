@@ -39,6 +39,7 @@ when declared(stdout):
 
 when not defined(ECMAScript):
   import terminal
+  system.addQuitProc(resetAttributes)
 
 type
   TestStatus* = enum OK, FAILED
@@ -149,10 +150,19 @@ macro check*(conditions: stmt): stmt {.immediate.} =
         inc counter
         var arg = newIdentNode(":p" & $counter)
         var argStr = exp[i].toStrLit
+        var paramAst = exp[i]
         if exp[i].kind in nnkCallKinds: inspectArgs(exp[i])
-        argsAsgns.add getAst(asgn(arg, exp[i]))
+        if exp[i].kind == nnkExprEqExpr:
+          # ExprEqExpr
+          #   Ident !"v"
+          #   IntLit 2
+          paramAst = exp[i][1]
+        argsAsgns.add getAst(asgn(arg, paramAst))
         argsPrintOuts.add getAst(print(argStr, arg))
-        exp[i] = arg
+        if exp[i].kind != nnkExprEqExpr:
+          exp[i] = arg
+        else:
+          exp[i][1] = arg
 
   case checked.kind
   of nnkCallKinds:
@@ -225,5 +235,3 @@ if envOutLvl.len > 0:
     if $opt == envOutLvl:
       outputLevel = opt
       break
-
-system.addQuitProc(resetAttributes)

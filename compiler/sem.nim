@@ -47,6 +47,24 @@ proc finishMethod(c: PContext, s: PSym)
 
 proc indexTypesMatch(c: PContext, f, a: PType, arg: PNode): PNode
 
+template semIdeForTemplateOrGenericCheck(n, requiresCheck) =
+  # we check quickly if the node is where the cursor is
+  when defined(nimsuggest):
+    if n.info.fileIndex == gTrackPos.fileIndex and n.info.line == gTrackPos.line:
+      requiresCheck = true
+
+template semIdeForTemplateOrGeneric(c: PContext; n: PNode;
+                                    requiresCheck: bool) =
+  # use only for idetools support; this is pretty slow so generics and
+  # templates perform some quick check whether the cursor is actually in
+  # the generic or template.
+  when defined(nimsuggest):
+    assert gCmd == cmdIdeTools
+    if requiresCheck:
+      if optIdeDebug in gGlobalOptions:
+        echo "passing to safeSemExpr: ", renderTree(n)
+      discard safeSemExpr(c, n)
+
 proc typeMismatch(n: PNode, formal, actual: PType) = 
   if formal.kind != tyError and actual.kind != tyError: 
     localError(n.info, errGenerated, msgKindToString(errTypeMismatch) &
@@ -112,9 +130,11 @@ proc commonType*(x, y: PType): PType =
   elif a.kind == tyTuple and b.kind == tyTuple and a.len == b.len:
     var nt: PType
     for i in 0.. <a.len:
-      if isEmptyContainer(a.sons[i]) and not isEmptyContainer(b.sons[i]):
+      let aEmpty = isEmptyContainer(a.sons[i])
+      let bEmpty = isEmptyContainer(b.sons[i])
+      if aEmpty != bEmpty:
         if nt.isNil: nt = copyType(a, a.owner, false)
-        nt.sons[i] = b.sons[i]
+        nt.sons[i] = if aEmpty: b.sons[i] else: a.sons[i]
     if not nt.isNil: result = nt
     #elif b.sons[idx].kind == tyEmpty: return x
   elif a.kind == tyRange and b.kind == tyRange:
@@ -175,9 +195,15 @@ proc semIdentWithPragma(c: PContext, kind: TSymKind, n: PNode,
                         allowed: TSymFlags): PSym
 proc semStmtScope(c: PContext, n: PNode): PNode
 
+proc typeAllowedCheck(info: TLineInfo; typ: PType; kind: TSymKind) =
+  let t = typeAllowed(typ, kind)
+  if t != nil:
+    if t == typ: localError(info, "invalid type: '" & typeToString(typ) & "'")
+    else: localError(info, "invalid type: '" & typeToString(t) & 
+                           "' in this context: '" & typeToString(typ) & "'")
+
 proc paramsTypeCheck(c: PContext, typ: PType) {.inline.} =
-  if not typeAllowed(typ, skConst):
-    localError(typ.n.info, errXisNoType, typeToString(typ))
+  typeAllowedCheck(typ.n.info, typ, skConst)
 
 proc expectMacroOrTemplateCall(c: PContext, n: PNode): PSym
 proc semDirectOp(c: PContext, n: PNode, flags: TExprFlags): PNode
@@ -353,13 +379,7 @@ proc semConstBoolExpr(c: PContext, n: PNode): PNode =
     localError(n.info, errConstExprExpected)
     result = nn
 
-type
-  TSemGenericFlag = enum
-    withinBind, withinTypeDesc, withinMixin
-  TSemGenericFlags = set[TSemGenericFlag]
-
-proc semGenericStmt(c: PContext, n: PNode, flags: TSemGenericFlags,
-                    ctx: var IntSet): PNode
+proc semGenericStmt(c: PContext, n: PNode): PNode
 
 include semtypes, semtempl, semgnrc, semstmts, semexprs
 

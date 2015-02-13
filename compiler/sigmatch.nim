@@ -205,10 +205,11 @@ proc cmpCandidates*(a, b: TCandidate): int =
 
 proc writeMatches*(c: TCandidate) = 
   writeln(stdout, "exact matches: " & $c.exactMatches)
-  writeln(stdout, "subtype matches: " & $c.subtypeMatches)
-  writeln(stdout, "conv matches: " & $c.convMatches)
-  writeln(stdout, "intconv matches: " & $c.intConvMatches)
   writeln(stdout, "generic matches: " & $c.genericMatches)
+  writeln(stdout, "subtype matches: " & $c.subtypeMatches)
+  writeln(stdout, "intconv matches: " & $c.intConvMatches)
+  writeln(stdout, "conv matches: " & $c.convMatches)
+  writeln(stdout, "inheritance: " & $c.inheritancePenalty)
 
 proc argTypeToString(arg: PNode; prefer: TPreferedDesc): string =
   if arg.kind in nkSymChoices:
@@ -283,7 +284,7 @@ proc handleRange(f, a: PType, min, max: TTypeKind): TTypeRelation =
       result = isFromIntLit
     elif f.kind == tyInt and k in {tyInt8..tyInt32}:
       result = isIntConv
-    elif k >= min and k <= max: 
+    elif k >= min and k <= max:
       result = isConvertible
     elif a.kind == tyRange and a.sons[0].kind in {tyInt..tyInt64, 
                                                   tyUInt8..tyUInt32} and
@@ -356,7 +357,7 @@ proc recordRel(c: var TCandidate, f, a: PType): TTypeRelation =
           var y = a.n.sons[i].sym
           if f.kind == tyObject and typeRel(c, x.typ, y.typ) < isSubtype:
             return isNone
-          if x.name.id != y.name.id and f.kind != tyTuple: return isNone
+          if x.name.id != y.name.id: return isNone
 
 proc allowsNil(f: PType): TTypeRelation {.inline.} =
   result = if tfNotNil notin f.flags: isSubtype else: isNone
@@ -417,7 +418,8 @@ proc procTypeRel(c: var TCandidate, f, a: PType): TTypeRelation =
 
     if tfNoSideEffect in f.flags and tfNoSideEffect notin a.flags:
       return isNone
-    elif tfThread in f.flags and a.flags * {tfThread, tfNoSideEffect} == {}:
+    elif tfThread in f.flags and a.flags * {tfThread, tfNoSideEffect} == {} and
+        optThreadAnalysis in gGlobalOptions:
       # noSideEffect implies ``tfThread``!
       return isNone
     elif f.flags * {tfIterator} != a.flags * {tfIterator}:
@@ -1055,7 +1057,7 @@ proc typeRel(c: var TCandidate, f, aOrig: PType, doBind = true): TTypeRelation =
 
   of tyFromExpr:
     # fix the expression, so it contains the already instantiated types
-    if f.n == nil: return isGeneric
+    if f.n == nil or f.n.kind == nkEmpty: return isGeneric
     let reevaluated = tryResolvingStaticExpr(c, f.n)
     case reevaluated.typ.kind
     of tyTypeDesc:
@@ -1299,7 +1301,6 @@ proc paramTypesMatch*(m: var TCandidate, f, a: PType,
     # incorrect to simply use the first fitting match. However, to implement
     # this correctly is inefficient. We have to copy `m` here to be able to
     # roll back the side effects of the unification algorithm.
-
     let c = m.c
     var x, y, z: TCandidate
     initCandidate(c, x, m.callee)
@@ -1328,12 +1329,15 @@ proc paramTypesMatch*(m: var TCandidate, f, a: PType,
               y = z           # z is as good as x
     if x.state == csEmpty: 
       result = nil
-    elif (y.state == csMatch) and (cmpCandidates(x, y) == 0): 
+    elif y.state == csMatch and cmpCandidates(x, y) == 0: 
       if x.state != csMatch: 
         internalError(arg.info, "x.state is not csMatch") 
-      # ambiguous: more than one symbol fits
-      result = nil
-    else: 
+      # ambiguous: more than one symbol fits!
+      # See tsymchoice_for_expr as an example. 'f.kind == tyExpr' should match
+      # anyway:
+      if f.kind == tyExpr: result = arg
+      else: result = nil
+    else:
       # only one valid interpretation found:
       markUsed(arg.info, arg.sons[best].sym)
       styleCheckUse(arg.info, arg.sons[best].sym)
@@ -1438,13 +1442,14 @@ proc matchesAux(c: PContext, n, nOrig: PNode,
         return
       checkConstraint(n.sons[a].sons[1])
       if m.baseTypeMatch: 
-        assert(container == nil)
+        #assert(container == nil)
         container = newNodeIT(nkBracket, n.sons[a].info, arrayConstr(c, arg))
         addSon(container, arg)
         setSon(m.call, formal.position + 1, container)
         if f != formalLen - 1: container = nil
-      else: 
+      else:
         setSon(m.call, formal.position + 1, arg)
+      inc f
     else:
       # unnamed param
       if f >= formalLen:
@@ -1463,7 +1468,7 @@ proc matchesAux(c: PContext, n, nOrig: PNode,
           n.sons[a] = prepareOperand(c, formal.typ, n.sons[a])
           var arg = paramTypesMatch(m, formal.typ, n.sons[a].typ,
                                     n.sons[a], nOrig.sons[a])
-          if (arg != nil) and m.baseTypeMatch and (container != nil):
+          if arg != nil and m.baseTypeMatch and container != nil:
             addSon(container, arg)
             incrIndexType(container.typ)
           else:
@@ -1477,7 +1482,7 @@ proc matchesAux(c: PContext, n, nOrig: PNode,
           internalError(n.sons[a].info, "matches")
           return
         formal = m.callee.n.sons[f].sym
-        if containsOrIncl(marker, formal.position): 
+        if containsOrIncl(marker, formal.position) and container.isNil:
           # already in namedParams:
           localError(n.sons[a].info, errCannotBindXTwice, formal.name.s)
           m.state = csNoMatch
@@ -1490,17 +1495,22 @@ proc matchesAux(c: PContext, n, nOrig: PNode,
           m.state = csNoMatch
           return
         if m.baseTypeMatch:
-          assert(container == nil)
-          container = newNodeIT(nkBracket, n.sons[a].info, arrayConstr(c, arg))
+          #assert(container == nil)
+          if container.isNil:
+            container = newNodeIT(nkBracket, n.sons[a].info, arrayConstr(c, arg))
           addSon(container, arg)
           setSon(m.call, formal.position + 1, 
                  implicitConv(nkHiddenStdConv, formal.typ, container, m, c))
-          if f != formalLen - 1: container = nil
+          #if f != formalLen - 1: container = nil
+
+          # pick the formal from the end, so that 'x, y, varargs, z' works:
+          f = max(f, formalLen - n.len + a + 1)
         else:
           setSon(m.call, formal.position + 1, arg)
+          inc(f)
+          container = nil
       checkConstraint(n.sons[a])
     inc(a)
-    inc(f)
 
 proc semFinishOperands*(c: PContext, n: PNode) =
   # this needs to be called to ensure that after overloading resolution every

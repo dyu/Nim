@@ -56,17 +56,14 @@ type                          # please make sure we have under 32 options
     optNoMain,                # do not generate a "main" proc
     optThreads,               # support for multi-threading
     optStdout,                # output to stdout
-    optSuggest,               # ideTools: 'suggest'
-    optContext,               # ideTools: 'context'
-    optDef,                   # ideTools: 'def'
-    optUsages,                # ideTools: 'usages'
     optThreadAnalysis,        # thread analysis pass
     optTaintMode,             # taint mode turned on
     optTlsEmulation,          # thread var emulation turned on
     optGenIndex               # generate index file for documentation;
     optEmbedOrigSrc           # embed the original source in the generated code
                               # also: generate header file
-   
+    optIdeDebug               # idetools: debug mode
+    optIdeTerse               # idetools: use terse descriptions
   TGlobalOptions* = set[TGlobalOption]
   TCommands* = enum           # Nim's commands
                               # **keep binary compatible**
@@ -85,6 +82,12 @@ type                          # please make sure we have under 32 options
   TStringSeq* = seq[string]
   TGCMode* = enum             # the selected GC
     gcNone, gcBoehm, gcMarkAndSweep, gcRefc, gcV2, gcGenerational
+
+  TIdeCmd* = enum
+    ideNone, ideSug, ideCon, ideDef, ideUse
+
+var
+  gIdeCmd*: TIdeCmd
 
 const
   ChecksOptions* = {optObjCheck, optFieldCheck, optRangeCheck, optNilCheck, 
@@ -111,17 +114,11 @@ var
   gLastCmdTime*: float        # when caas is enabled, we measure each command
   gListFullPaths*: bool
   isServing*: bool = false
-  gDirtyBufferIdx* = 0'i32    # indicates the fileIdx of the dirty version of
-                              # the tracked source X, saved by the CAAS client.
-  gDirtyOriginalIdx* = 0'i32  # the original source file of the dirtified buffer.
   gNoNimblePath* = false
   gExperimentalMode*: bool
 
 proc importantComments*(): bool {.inline.} = gCmd in {cmdDoc, cmdIdeTools}
 proc usesNativeGC*(): bool {.inline.} = gSelectedGC >= gcRefc
-
-template isWorkingWithDirtyBuffer*: expr =
-  gDirtyBufferIdx != 0
 
 template compilationCachePresent*: expr =
   {optCaasEnabled, optSymbolFiles} * gGlobalOptions != {}

@@ -92,10 +92,10 @@ proc semProc(c: PContext, n: PNode): PNode
 include semdestruct
 
 proc semDestructorCheck(c: PContext, n: PNode, flags: TExprFlags) {.inline.} =
-  if efAllowDestructor notin flags and n.kind in nkCallKinds+{nkObjConstr}:
+  if efAllowDestructor notin flags and
+      n.kind in nkCallKinds+{nkObjConstr,nkBracket}:
     if instantiateDestructor(c, n.typ) != nil:
-      localError(n.info, errGenerated,
-        "usage of a type with a destructor in a non destructible context")
+      localError(n.info, warnDestructor)
   # This still breaks too many things:
   when false:
     if efDetermineType notin flags and n.typ.kind == tyTypeDesc and 
@@ -359,6 +359,10 @@ proc semVarOrLet(c: PContext, n: PNode, symkind: TSymKind): PNode =
     var def: PNode
     if a.sons[length-1].kind != nkEmpty:
       def = semExprWithType(c, a.sons[length-1], {efAllowDestructor})
+      if def.typ.kind == tyTypeDesc and c.p.owner.kind != skMacro:
+        # prevent the all too common 'var x = int' bug:
+        localError(def.info, "'typedesc' metatype is not valid here; typed '=' instead of ':'?")
+        def.typ = errorType(c)
       if typ != nil:
         if typ.isMetaType:
           def = inferWithMetatype(c, typ, def)
@@ -380,8 +384,7 @@ proc semVarOrLet(c: PContext, n: PNode, symkind: TSymKind): PNode =
       
     # this can only happen for errornous var statements:
     if typ == nil: continue
-    if not typeAllowed(typ, symkind): 
-      localError(a.info, errXisNoType, typeToString(typ))
+    typeAllowedCheck(a.info, typ, symkind)
     var tup = skipTypes(typ, {tyGenericInst})
     if a.kind == nkVarTuple: 
       if tup.kind != tyTuple: 
@@ -456,7 +459,7 @@ proc semConst(c: PContext, n: PNode): PNode =
     if typ == nil:
       localError(a.sons[2].info, errConstExprExpected)
       continue
-    if not typeAllowed(typ, skConst) and def.kind != nkNilLit:
+    if typeAllowed(typ, skConst) != nil and def.kind != nkNilLit:
       localError(a.info, errXisNoType, typeToString(typ))
       continue
     v.typ = typ
@@ -732,7 +735,7 @@ proc semBorrow(c: PContext, n: PNode, s: PSym) =
     localError(n.info, errNoSymbolToBorrowFromFound) 
   
 proc addResult(c: PContext, t: PType, info: TLineInfo, owner: TSymKind) = 
-  if t != nil: 
+  if t != nil:
     var s = newSym(skResult, getIdent"result", getCurrOwner(), info)
     s.typ = t
     incl(s.flags, sfUsed)
@@ -814,8 +817,7 @@ proc semLambda(c: PContext, n: PNode, flags: TExprFlags): PNode =
       # we have a list of implicit type parameters:
       n.sons[genericParamsPos] = gp
   else:
-    s.typ = newTypeS(tyProc, c)
-    rawAddSon(s.typ, nil)
+    s.typ = newProcType(c, n.info)
   if n.sons[pragmasPos].kind != nkEmpty:
     pragma(c, s, n.sons[pragmasPos], lambdaPragmas)
   s.options = gOptions
@@ -827,9 +829,9 @@ proc semLambda(c: PContext, n: PNode, flags: TExprFlags): PNode =
     if gp.len == 0 or (gp.len == 1 and tfRetType in gp[0].typ.flags):
       pushProcCon(c, s)
       addResult(c, s.typ.sons[0], n.info, skProc)
+      addResultNode(c, n)
       let semBody = hloBody(c, semProcBody(c, n.sons[bodyPos]))
       n.sons[bodyPos] = transformBody(c.module, semBody, s)
-      addResultNode(c, n)
       popProcCon(c)
     elif efOperand notin flags:
       localError(n.info, errGenericLambdaNotAllowed)
@@ -839,6 +841,13 @@ proc semLambda(c: PContext, n: PNode, flags: TExprFlags): PNode =
   closeScope(c)           # close scope for parameters
   popOwner()
   result.typ = s.typ
+
+proc semDo(c: PContext, n: PNode, flags: TExprFlags): PNode =
+  # 'do' without params produces a stmt:
+  if n[genericParamsPos].kind == nkEmpty and n[paramsPos].kind == nkEmpty:
+    result = semStmt(c, n[bodyPos])
+  else:
+    result = semLambda(c, n, flags)
 
 proc semInferredLambda(c: PContext, pt: TIdTable, n: PNode): PNode =
   var n = n
@@ -851,13 +860,15 @@ proc semInferredLambda(c: PContext, pt: TIdTable, n: PNode): PNode =
   
   openScope(c)
   var s = n.sons[namePos].sym
+  pushOwner(s)
   addParams(c, n.typ.n, skProc)
   pushProcCon(c, s)
   addResult(c, n.typ.sons[0], n.info, skProc)
+  addResultNode(c, n)
   let semBody = hloBody(c, semProcBody(c, n.sons[bodyPos]))
   n.sons[bodyPos] = transformBody(c.module, semBody, n.sons[namePos].sym)
-  addResultNode(c, n)
   popProcCon(c)
+  popOwner()
   closeScope(c)
   
   s.ast = result
@@ -980,15 +991,14 @@ proc semProcAux(c: PContext, n: PNode, kind: TSymKind,
   # process parameters:
   if n.sons[paramsPos].kind != nkEmpty:
     semParamList(c, n.sons[paramsPos], gp, s)
-    if sonsLen(gp) > 0: 
+    if sonsLen(gp) > 0:
       if n.sons[genericParamsPos].kind == nkEmpty:
         # we have a list of implicit type parameters:
         n.sons[genericParamsPos] = gp
         # check for semantics again:
         # semParamList(c, n.sons[ParamsPos], nil, s)
   else:
-    s.typ = newTypeS(tyProc, c)
-    rawAddSon(s.typ, nil)
+    s.typ = newProcType(c, n.info)
   if n.sons[patternPos].kind != nkEmpty:
     n.sons[patternPos] = semPattern(c, n.sons[patternPos])
   if s.kind in skIterators:
@@ -1047,6 +1057,7 @@ proc semProcAux(c: PContext, n: PNode, kind: TSymKind,
     if n.sons[genericParamsPos].kind == nkEmpty or usePseudoGenerics:
       if not usePseudoGenerics: paramsTypeCheck(c, s.typ)
       pushProcCon(c, s)
+      c.p.wasForwarded = proto != nil
       maybeAddResult(c, s, n)
       if sfImportc notin s.flags:
         # no semantic checking for importc:
@@ -1058,8 +1069,9 @@ proc semProcAux(c: PContext, n: PNode, kind: TSymKind,
     else:
       if s.typ.sons[0] != nil and kind notin skIterators:
         addDecl(c, newSym(skUnknown, getIdent"result", nil, n.info))
-      var toBind = initIntSet()
-      n.sons[bodyPos] = semGenericStmtScope(c, n.sons[bodyPos], {}, toBind)
+      openScope(c)
+      n.sons[bodyPos] = semGenericStmt(c, n.sons[bodyPos])
+      closeScope(c)
       fixupInstantiatedSymbols(c, s)
     if sfImportc in s.flags:
       # so we just ignore the body after semantic checking for importc:
@@ -1184,6 +1196,8 @@ proc semPragmaBlock(c: PContext, n: PNode): PNode =
     else: discard
 
 proc semStaticStmt(c: PContext, n: PNode): PNode =
+  #echo "semStaticStmt"
+  #writeStackTrace()
   let a = semStmt(c, n.sons[0])
   n.sons[0] = a
   evalStaticStmt(c.module, a, c.p.owner)
@@ -1201,7 +1215,8 @@ proc semStaticStmt(c: PContext, n: PNode): PNode =
 proc usesResult(n: PNode): bool =
   # nkStmtList(expr) properly propagates the void context,
   # so we don't need to process that all over again:
-  if n.kind notin {nkStmtList, nkStmtListExpr} + procDefs:
+  if n.kind notin {nkStmtList, nkStmtListExpr,
+                   nkMacroDef, nkTemplateDef} + procDefs:
     if isAtom(n):
       result = n.kind == nkSym and n.sym.kind == skResult
     elif n.kind == nkReturnStmt:

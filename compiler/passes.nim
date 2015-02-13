@@ -169,12 +169,12 @@ proc processModule(module: PSym, stream: PLLStream, rd: PRodReader) =
   if rd == nil: 
     openPasses(a, module)
     if stream == nil: 
-      let filename = fileIdx.toFullPath
+      let filename = fileIdx.toFullPathConsiderDirty
       s = llStreamOpen(filename, fmRead)
       if s == nil: 
         rawMessage(errCannotOpenFile, filename)
         return
-    else: 
+    else:
       s = stream
     while true: 
       openParsers(p, fileIdx, s)

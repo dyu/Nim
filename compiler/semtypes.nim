@@ -608,12 +608,6 @@ proc addInheritedFieldsAux(c: PContext, check: var IntSet, pos: var int,
     incl(check, n.sym.name.id)
     inc(pos)
   else: internalError(n.info, "addInheritedFieldsAux()")
-  
-proc addInheritedFields(c: PContext, check: var IntSet, pos: var int, 
-                        obj: PType) = 
-  if (sonsLen(obj) > 0) and (obj.sons[0] != nil): 
-    addInheritedFields(c, check, pos, obj.sons[0])
-  addInheritedFieldsAux(c, check, pos, obj.n)
 
 proc skipGenericInvokation(t: PType): PType {.inline.} = 
   result = t
@@ -621,6 +615,13 @@ proc skipGenericInvokation(t: PType): PType {.inline.} =
     result = result.sons[0]
   if result.kind == tyGenericBody:
     result = lastSon(result)
+
+proc addInheritedFields(c: PContext, check: var IntSet, pos: var int, 
+                        obj: PType) =
+  assert obj.kind == tyObject
+  if (sonsLen(obj) > 0) and (obj.sons[0] != nil): 
+    addInheritedFields(c, check, pos, obj.sons[0].skipGenericInvokation)
+  addInheritedFieldsAux(c, check, pos, obj.n)
 
 proc semObjectNode(c: PContext, n: PNode, prev: PType): PType =
   if n.sonsLen == 0: return newConstraint(c, tyObject)
@@ -662,25 +663,22 @@ proc findEnforcedStaticType(t: PType): PType =
       if t != nil: return t
 
 proc addParamOrResult(c: PContext, param: PSym, kind: TSymKind) =
-  template addDecl(x) =
-    if sfGenSym notin x.flags: addDecl(c, x)
-
   if kind == skMacro:
     let staticType = findEnforcedStaticType(param.typ)
     if staticType != nil:
       var a = copySym(param)
       a.typ = staticType.base
-      addDecl(a)
+      addDecl(c, a)
     elif param.typ.kind == tyTypeDesc:
-      addDecl(param)
+      addDecl(c, param)
     else:
       # within a macro, every param has the type PNimrodNode!
       let nn = getSysSym"PNimrodNode"
       var a = copySym(param)
       a.typ = nn.typ
-      addDecl(a)
+      addDecl(c, a)
   else:
-    addDecl(param)
+    if sfGenSym notin param.flags: addDecl(c, param)
 
 let typedescId = getIdent"typedesc"
 
@@ -783,9 +781,10 @@ proc liftParamType(c: PContext, procKind: TSymKind, genericParams: PNode,
     result.rawAddSon(paramType)
       
     for i in 0 .. paramType.sonsLen - 2:
-      let dummyType = if paramType.sons[i].kind == tyStatic: tyUnknown
-                      else: tyAnything
-      result.rawAddSon newTypeS(dummyType, c)
+      if paramType.sons[i].kind == tyStatic:
+        result.rawAddSon makeTypeFromExpr(c, ast.emptyNode) # aka 'tyUnkown'
+      else:
+        result.rawAddSon newTypeS(tyAnything, c)
       
     if paramType.lastSon.kind == tyUserTypeClass:
       result.kind = tyUserTypeClassInst
@@ -858,25 +857,25 @@ proc semParamType(c: PContext, n: PNode, constraint: var PNode): PType =
   else:
     result = semTypeNode(c, n, nil)
 
-proc semProcTypeNode(c: PContext, n, genericParams: PNode,
-                     prev: PType, kind: TSymKind; isType=false): PType =
-  # for historical reasons (code grows) this is invoked for parameter
-  # lists too and then 'isType' is false.
-  var
-    res: PNode
-    cl: IntSet
-  checkMinSonsLen(n, 1)
+proc newProcType(c: PContext; info: TLineInfo; prev: PType = nil): PType =
   result = newOrPrevType(tyProc, prev, c)
   result.callConv = lastOptionEntry(c).defaultCC
-  result.n = newNodeI(nkFormalParams, n.info)
-  if genericParams != nil and sonsLen(genericParams) == 0:
-    cl = initIntSet()
+  result.n = newNodeI(nkFormalParams, info)
   rawAddSon(result, nil) # return type
   # result.n[0] used to be `nkType`, but now it's `nkEffectList` because 
   # the effects are now stored in there too ... this is a bit hacky, but as
   # usual we desperately try to save memory:
-  res = newNodeI(nkEffectList, n.info)
-  addSon(result.n, res)
+  addSon(result.n, newNodeI(nkEffectList, info))
+
+proc semProcTypeNode(c: PContext, n, genericParams: PNode,
+                     prev: PType, kind: TSymKind; isType=false): PType =
+  # for historical reasons (code grows) this is invoked for parameter
+  # lists too and then 'isType' is false.
+  var cl: IntSet
+  checkMinSonsLen(n, 1)
+  result = newProcType(c, n.info, prev)
+  if genericParams != nil and sonsLen(genericParams) == 0:
+    cl = initIntSet()
   var check = initIntSet()
   var counter = 0
   for i in countup(1, n.len - 1):
@@ -913,6 +912,8 @@ proc semProcTypeNode(c: PContext, n, genericParams: PNode,
     if not hasType and not hasDefault:
       if isType: localError(a.info, "':' expected")
       let tdef = if kind in {skTemplate, skMacro}: tyExpr else: tyAnything
+      if tdef == tyAnything:
+        message(a.info, warnTypelessParam, renderTree(n))
       typ = newTypeS(tdef, c)
 
     if skipTypes(typ, {tyGenericInst}).kind == tyEmpty: continue
@@ -938,7 +939,7 @@ proc semProcTypeNode(c: PContext, n, genericParams: PNode,
     r = semTypeNode(c, n.sons[0], nil)
   elif kind == skIterator:
     # XXX This is special magic we should likely get rid of
-    r = newTypeS(tyAnything, c)
+    r = newTypeS(tyExpr, c)
   
   if r != nil:
     # turn explicit 'void' return type into 'nil' because the rest of the 
@@ -958,7 +959,7 @@ proc semProcTypeNode(c: PContext, n, genericParams: PNode,
           # we don't need to change the return type to iter[T]
           if not r.isInlineIterator: r = newTypeWithSons(c, tyIter, @[r])
       result.sons[0] = r
-      res.typ = r
+      result.n.typ = r
 
   if genericParams != nil:
     for n in genericParams:
@@ -1180,8 +1181,7 @@ proc semTypeNode(c: PContext, n: PNode, prev: PType): PType =
       return errorType(c)
     result = typeExpr.typ.base
     if result.isMetaType:
-      var toBind = initIntSet()
-      var preprocessed = semGenericStmt(c, n, {}, toBind)
+      var preprocessed = semGenericStmt(c, n)
       return makeTypeFromExpr(c, preprocessed)
   of nkIdent, nkAccQuoted:
     var s = semTypeIdent(c, n)

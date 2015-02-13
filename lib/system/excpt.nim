@@ -175,6 +175,8 @@ proc auxWriteStackTrace(f: PFrame, s: var string) =
       add(s, tempFrames[j].procname)
     add(s, "\n")
 
+proc stackTraceAvailable*(): bool
+
 when hasSomeStackTrace:
   proc rawWriteStackTrace(s: var string) =
     when NimStackTrace:
@@ -188,6 +190,18 @@ when hasSomeStackTrace:
       auxWriteStackTraceWithBacktrace(s)
     else:
       add(s, "No stack traceback available\n")
+  proc stackTraceAvailable(): bool =
+    when NimStackTrace:
+      if framePtr == nil:
+        result = false
+      else:
+        result = true
+    elif defined(nativeStackTrace) and nativeStackTraceSupported:
+      result = true
+    else:
+      result = false
+else:
+  proc stackTraceAvailable*(): bool = result = false
 
 proc quitOrDebug() {.inline.} =
   when not defined(endb):
@@ -296,7 +310,7 @@ when not defined(noSignalHandler):
     template processSignal(s, action: expr) {.immediate,  dirty.} =
       if s == SIGINT: action("SIGINT: Interrupted by Ctrl-C.\n")
       elif s == SIGSEGV: 
-        action("SIGSEGV: Illegal storage access. (Try to compile with -d:useSysAssert -d:useGcAssert for details.)\n")
+        action("SIGSEGV: Illegal storage access. (Attempt to read from nil?)\n")
       elif s == SIGABRT:
         when defined(endb):
           if dbgAborting: return # the debugger wants to abort
@@ -304,7 +318,7 @@ when not defined(noSignalHandler):
       elif s == SIGFPE: action("SIGFPE: Arithmetic error.\n")
       elif s == SIGILL: action("SIGILL: Illegal operation.\n")
       elif s == SIGBUS:
-        action("SIGBUS: Illegal storage access.  (Try to compile with -d:useSysAssert -d:useGcAssert for details.)\n")
+        action("SIGBUS: Illegal storage access. (Attempt to read from nil?)\n")
       else:
         block platformSpecificSignal:
           when declared(SIGPIPE):
@@ -341,7 +355,7 @@ when not defined(noSignalHandler):
 
   registerSignalHandler() # call it in initialization section
 
-proc setControlCHook(hook: proc () {.noconv.}) =
+proc setControlCHook(hook: proc () {.noconv.} not nil) =
   # ugly cast, but should work on all architectures:
   type TSignalHandler = proc (sig: cint) {.noconv, benign.}
   c_signal(SIGINT, cast[TSignalHandler](hook))

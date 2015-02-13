@@ -58,12 +58,7 @@ proc commandCompileToC =
   registerPass(cgenPass)
   rodPass()
   #registerPass(cleanupPass())
-  if optCaasEnabled in gGlobalOptions:
-    # echo "BEFORE CHECK DEP"
-    # discard checkDepMem(gProjectMainIdx)
-    # echo "CHECK DEP COMPLETE"
-    discard
-
+  
   compileProject()
   cgenWriteModules()
   if gCmd != cmdRun:
@@ -174,20 +169,18 @@ proc commandSuggest =
     # cache in a state where "no recompilation is necessary", but the
     # cgen pass was never executed at all.
     commandCompileToC()
-    if gDirtyBufferIdx != 0:
-      discard compileModule(gDirtyBufferIdx, {sfDirty})
-      resetModule(gDirtyBufferIdx)
-    if optDef in gGlobalOptions:
-      defFromSourceMap(optTrackPos)
+    let gDirtyBufferIdx = gTrackPos.fileIndex
+    discard compileModule(gDirtyBufferIdx, {sfDirty})
+    resetModule(gDirtyBufferIdx)
   else:
     msgs.gErrorMax = high(int)  # do not stop after first error
     semanticPasses()
     rodPass()
     # XXX: this handles the case when the dirty buffer is the main file,
     # but doesn't handle the case when it's imported module
-    var projFile = if gProjectMainIdx == gDirtyOriginalIdx: gDirtyBufferIdx
-                   else: gProjectMainIdx
-    compileProject(projFile)
+    #var projFile = if gProjectMainIdx == gDirtyOriginalIdx: gDirtyBufferIdx
+    #               else: gProjectMainIdx
+    compileProject() #(projFile)
 
 proc resetMemory =
   resetCompilationLists()
@@ -218,7 +211,6 @@ proc resetMemory =
   # rodread.gMods
 
   # !! ropes.cache
-  # semthreads.computed?
   #
   # suggest.usageSym
   #
@@ -259,7 +251,6 @@ proc mainCommand* =
     commandCompileToC()
   of "cpp", "compiletocpp":
     gCmd = cmdCompileToCpp
-    if cCompiler == ccGcc: setCC("gcc")
     defineSymbol("cpp")
     commandCompileToC()
   of "objc", "compiletooc":

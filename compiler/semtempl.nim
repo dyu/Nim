@@ -105,10 +105,11 @@ proc replaceIdentBySym(n: var PNode, s: PNode) =
   else: illFormedAst(n)
 
 type
-  TemplCtx {.pure, final.} = object
+  TemplCtx = object
     c: PContext
     toBind, toMixin, toInject: IntSet
     owner: PSym
+    cursorInBody: bool # only for nimsuggest
 
 proc getIdentNode(c: var TemplCtx, n: PNode): PNode =
   case n.kind
@@ -127,7 +128,7 @@ proc getIdentNode(c: var TemplCtx, n: PNode): PNode =
 
 proc isTemplParam(c: TemplCtx, n: PNode): bool {.inline.} =
   result = n.kind == nkSym and n.sym.kind == skParam and
-           n.sym.owner == c.owner
+           n.sym.owner == c.owner and sfGenSym notin n.sym.flags
 
 proc semTemplBody(c: var TemplCtx, n: PNode): PNode
 
@@ -246,8 +247,8 @@ proc semRoutineInTemplBody(c: var TemplCtx, n: PNode, k: TSymKind): PNode =
     n.sons[i] = semTemplBody(c, n.sons[i])
   closeScope(c)
 
-proc semTemplSomeDecl(c: var TemplCtx, n: PNode, symKind: TSymKind) =
-  for i in countup(0, sonsLen(n) - 1):
+proc semTemplSomeDecl(c: var TemplCtx, n: PNode, symKind: TSymKind; start=0) =
+  for i in countup(start, sonsLen(n) - 1):
     var a = n.sons[i]
     if a.kind == nkCommentStmt: continue
     if (a.kind != nkIdentDefs) and (a.kind != nkVarTuple): illFormedAst(a)
@@ -259,8 +260,9 @@ proc semTemplSomeDecl(c: var TemplCtx, n: PNode, symKind: TSymKind) =
       addLocalDecl(c, a.sons[j], symKind)
 
 proc semPattern(c: PContext, n: PNode): PNode
-proc semTemplBody(c: var TemplCtx, n: PNode): PNode = 
+proc semTemplBody(c: var TemplCtx, n: PNode): PNode =
   result = n
+  semIdeForTemplateOrGenericCheck(n, c.cursorInBody)
   case n.kind
   of nkIdent:
     if n.ident.id in c.toInject: return n
@@ -348,6 +350,10 @@ proc semTemplBody(c: var TemplCtx, n: PNode): PNode =
       a.sons[L-1] = semTemplBodyScope(c, a.sons[L-1])
   of nkVarSection: semTemplSomeDecl(c, n, skVar)
   of nkLetSection: semTemplSomeDecl(c, n, skLet)
+  of nkFormalParams:
+    checkMinSonsLen(n, 1)
+    n.sons[0] = semTemplBody(c, n.sons[0])
+    semTemplSomeDecl(c, n, skParam, 1)
   of nkConstSection:
     for i in countup(0, sonsLen(n) - 1): 
       var a = n.sons[i]
@@ -412,8 +418,9 @@ proc semTemplBody(c: var TemplCtx, n: PNode): PNode =
     for i in countup(0, sonsLen(n) - 1):
       result.sons[i] = semTemplBody(c, n.sons[i])
 
-proc semTemplBodyDirty(c: var TemplCtx, n: PNode): PNode = 
+proc semTemplBodyDirty(c: var TemplCtx, n: PNode): PNode =
   result = n
+  semIdeForTemplateOrGenericCheck(n, c.cursorInBody)
   case n.kind
   of nkIdent:
     let s = qualifiedLookUp(c.c, n, {})
@@ -485,6 +492,11 @@ proc semTemplateDef(c: PContext, n: PNode): PNode =
   # process parameters:
   if n.sons[paramsPos].kind != nkEmpty:
     semParamList(c, n.sons[paramsPos], gp, s)
+    # a template's parameters are not gensym'ed even if that was originally the
+    # case as we determine whether it's a template parameter in the template
+    # body by the absense of the skGenSym flag:
+    for i in 1 .. s.typ.n.len-1:
+      s.typ.n.sons[i].sym.flags.excl sfGenSym
     if sonsLen(gp) > 0:
       if n.sons[genericParamsPos].kind == nkEmpty:
         # we have a list of implicit type parameters:
@@ -515,6 +527,7 @@ proc semTemplateDef(c: PContext, n: PNode): PNode =
   if s.typ.sons[0].kind notin {tyStmt, tyTypeDesc}:
     n.sons[bodyPos] = transformToExpr(n.sons[bodyPos]) 
     # only parameters are resolved, no type checking is performed
+  semIdeForTemplateOrGeneric(c, n.sons[bodyPos], ctx.cursorInBody)
   closeScope(c)
   popOwner()
   s.ast = n

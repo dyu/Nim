@@ -18,7 +18,7 @@ when defined(gcc) and defined(windows):
 import
   os, strutils, parseopt, osproc, streams
 
-import "compiler/nversion.nim"
+const VersionAsString = system.NimVersion #"0.10.2"
 
 when defined(withUpdate):
   import httpclient
@@ -40,7 +40,7 @@ Options:
   --help, -h               shows this help and quits
 Possible Commands:
   boot [options]           bootstraps with given command line options
-  install [bindir]         installs to given directory
+  install [bindir]         installs to given directory; Unix only!
   clean                    cleans Nimrod project; removes generated files
   web [options]            generates the website and the full documentation
   website [options]        generates only the website
@@ -61,6 +61,9 @@ Boot options:
   -d:nativeStacktrace      use native stack traces (only for Mac OS X or Linux)
   -d:noCaas                build Nimrod without CAAS support
   -d:avoidTimeMachine      only for Mac OS X, excludes nimcache dir from backups
+Web options:
+  --googleAnalytics:UA-... add the given google analytics code to the docs. To
+                           build the official docs, use UA-48159761-1
 """
 
 proc exe(f: string): string = return addFileExt(f, ExeExt)
@@ -74,9 +77,9 @@ proc findNim(): string =
   # assume there is a symlink to the exe or something:
   return nim
 
-proc exec(cmd: string) =
+proc exec(cmd: string, errorcode: int = QuitFailure) =
   echo(cmd)
-  if execShellCmd(cmd) != 0: quit("FAILURE")
+  if execShellCmd(cmd) != 0: quit("FAILURE", errorcode)
 
 proc tryExec(cmd: string): bool = 
   echo(cmd)
@@ -94,13 +97,13 @@ const
   compileNimInst = "-d:useLibzipSrc tools/niminst/niminst"
 
 proc csource(args: string) = 
-  exec("$4 cc $1 -r $3 --var:version=$2 --var:mingw=none csource compiler/nim.ini $1" %
+  exec("$4 cc $1 -r $3 --var:version=$2 --var:mingw=none csource compiler/installer.ini $1" %
        [args, VersionAsString, compileNimInst, findNim()])
 
 proc zip(args: string) =
-  exec("$3 cc -r $2 --var:version=$1 --var:mingw=none scripts compiler/nim.ini" %
+  exec("$3 cc -r $2 --var:version=$1 --var:mingw=none scripts compiler/installer.ini" %
        [VersionAsString, compileNimInst, findNim()])
-  exec("$# --var:version=$# --var:mingw=none zip compiler/nim.ini" %
+  exec("$# --var:version=$# --var:mingw=none zip compiler/installer.ini" %
        ["tools/niminst/niminst".exe, VersionAsString])
 
 proc buildTool(toolname, args: string) =
@@ -118,20 +121,20 @@ proc nsis(args: string) =
         " nsis compiler/nim") % [VersionAsString, $(sizeof(pointer)*8)])
 
 proc install(args: string) = 
-  exec("$# cc -r $# --var:version=$# --var:mingw=none scripts compiler/nim.ini" %
+  exec("$# cc -r $# --var:version=$# --var:mingw=none scripts compiler/installer.ini" %
        [findNim(), compileNimInst, VersionAsString])
   exec("sh ./install.sh $#" % args)
 
 proc web(args: string) =
-  exec("$# cc -r tools/nimweb.nim $# web/nim --putenv:nimversion=$#" %
+  exec("$# cc -r tools/nimweb.nim $# web/website.ini --putenv:nimversion=$#" %
        [findNim(), args, VersionAsString])
 
 proc website(args: string) =
-  exec("$# cc -r tools/nimweb.nim $# --website web/nim --putenv:nimversion=$#" %
+  exec("$# cc -r tools/nimweb.nim $# --website web/website.ini --putenv:nimversion=$#" %
        [findNim(), args, VersionAsString])
 
 proc pdf(args="") =
-  exec("$# cc -r tools/nimweb.nim $# --pdf web/nim --putenv:nimversion=$#" %
+  exec("$# cc -r tools/nimweb.nim $# --pdf web/website.ini --putenv:nimversion=$#" %
        [findNim(), args, VersionAsString])
 
 # -------------- boot ---------------------------------------------------------
@@ -338,7 +341,9 @@ proc tests(args: string) =
 proc temp(args: string) =
   var output = "compiler" / "nim".exe
   var finalDest = "bin" / "nim_temp".exe
-  exec("nim c compiler" / "nim")
+  # 125 is the magic number to tell git bisect to skip the current
+  # commit.
+  exec("nim c compiler" / "nim", 125)
   copyExe(output, finalDest)
   if args.len > 0: exec(finalDest & " " & args)
 
@@ -356,6 +361,9 @@ of cmdArgument:
   of "clean": clean(op.cmdLineRest)
   of "web": web(op.cmdLineRest)
   of "website": website(op.cmdLineRest)
+  of "web0":
+    # undocumented command for Araq-the-merciful:
+    web(op.cmdLineRest & " --googleAnalytics:UA-48159761-1")
   of "pdf": pdf()
   of "csource", "csources": csource(op.cmdLineRest)
   of "zip": zip(op.cmdLineRest)
